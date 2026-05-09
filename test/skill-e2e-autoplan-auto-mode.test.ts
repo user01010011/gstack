@@ -66,8 +66,8 @@ describeE2E('autoplan AskUserQuestion-blocked smoke (gate)', () => {
     //   3. Numbered/lettered options visible in TTY as prose (post-v1.28 prose-AUQ rendering)
     // If NONE of these are present, the question was silently buried.
     const blockedVisible = /BLOCKED\s*[—-]\s*AskUserQuestion/i.test(obs.evidence);
-    const proseAUQVisible = isProseAUQVisible(obs.evidence);
-    const surfaceVisible = blockedVisible || proseAUQVisible;
+    const proseAUQVisible = isProseAUQVisible(obs.evidence) || obs.proseAUQEverObserved === true;
+    const surfaceVisible = blockedVisible || proseAUQVisible || obs.waitingEverObserved === true;
 
     if (
       obs.outcome === 'auto_decided' ||

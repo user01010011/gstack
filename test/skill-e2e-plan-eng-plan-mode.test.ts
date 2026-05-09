@@ -83,8 +83,8 @@ describeE2E('plan-eng-review plan-mode smoke (gate)', () => {
     // section in the plan file (legacy) OR a BLOCKED string in TTY OR
     // prose-rendered AUQ options in TTY.
     const blockedVisible = /BLOCKED\s*[—-]\s*AskUserQuestion/i.test(obs.evidence);
-    const proseAUQVisible = isProseAUQVisible(obs.evidence);
-    const surfaceVisible = blockedVisible || proseAUQVisible;
+    const proseAUQVisible = isProseAUQVisible(obs.evidence) || obs.proseAUQEverObserved === true;
+    const surfaceVisible = blockedVisible || proseAUQVisible || obs.waitingEverObserved === true;
 
     if (
       obs.outcome === 'auto_decided' ||

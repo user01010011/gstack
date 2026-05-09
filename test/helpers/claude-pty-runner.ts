@@ -1402,6 +1402,27 @@ export interface PlanSkillObservation {
    * the section, and that's the regression we want to catch.
    */
   planFile?: string;
+  /**
+   * High-water-mark flag: did the polling loop ever observe a
+   * prose-rendered AskUserQuestion (lettered or numbered options visible)
+   * during the run? Set true the first poll iteration that
+   * isProseAUQVisible returns true on the recent buffer; remains true
+   * for the rest of the observation.
+   *
+   * The 2KB `evidence` window often misses the prose-AUQ moment because
+   * by the time outcome=plan_ready fires, the ExitPlanMode "Ready to
+   * execute" UI has pushed the options out of the tail. Tests that need
+   * to assert "the user saw the question at SOME point" should check
+   * this flag rather than re-running isProseAUQVisible on the truncated
+   * evidence.
+   */
+  proseAUQEverObserved?: boolean;
+  /**
+   * High-water-mark flag: did the LLM judge ever return state='waiting'
+   * during the run? Same shape as proseAUQEverObserved but driven by the
+   * Haiku judge fallback rather than the regex detector.
+   */
+  waitingEverObserved?: boolean;
 }
 
 /**
@@ -1543,6 +1564,8 @@ export async function runPlanSkillObservation(opts: {
           ...classified,
           evidence: visible.slice(-2000),
           elapsedMs: Date.now() - startedAt,
+          proseAUQEverObserved,
+          waitingEverObserved,
         };
         // Capture the plan file path on any outcome where one may have been
         // written. Gating only on 'plan_ready' missed two cases: (1) the
@@ -1594,6 +1617,8 @@ export async function runPlanSkillObservation(opts: {
             : ''),
         evidence: finalVisible.slice(-2000),
         elapsedMs: Date.now() - startedAt,
+        proseAUQEverObserved,
+        waitingEverObserved,
       };
     }
     return {
@@ -1605,6 +1630,8 @@ export async function runPlanSkillObservation(opts: {
           : ''),
       evidence: finalVisible.slice(-2000),
       elapsedMs: Date.now() - startedAt,
+      proseAUQEverObserved,
+      waitingEverObserved,
     };
   } finally {
     await session.close();

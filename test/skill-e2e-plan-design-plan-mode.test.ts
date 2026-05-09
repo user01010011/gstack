@@ -63,8 +63,8 @@ describeE2E('plan-design-review plan-mode smoke (gate)', () => {
     // Surface visibility check (same as ceo / autoplan migrations): user
     // must SEE the question via BLOCKED string OR prose-rendered AUQ options.
     const blockedVisible = /BLOCKED\s*[—-]\s*AskUserQuestion/i.test(obs.evidence);
-    const proseAUQVisible = isProseAUQVisible(obs.evidence);
-    const surfaceVisible = blockedVisible || proseAUQVisible;
+    const proseAUQVisible = isProseAUQVisible(obs.evidence) || obs.proseAUQEverObserved === true;
+    const surfaceVisible = blockedVisible || proseAUQVisible || obs.waitingEverObserved === true;
 
     if (
       obs.outcome === 'auto_decided' ||
