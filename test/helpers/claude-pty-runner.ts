@@ -298,6 +298,58 @@ export function isNumberedOptionListVisible(visible: string): boolean {
 }
 
 /**
+ * Detect a prose-rendered AskUserQuestion in plan mode.
+ *
+ * Plan-mode AUQs sometimes render as visible model output rather than via
+ * the native numbered-prompt UI — e.g., when --disallowedTools AskUserQuestion
+ * is set and no MCP variant is callable, the model surfaces the question as
+ * lettered or numbered options in plain text. isNumberedOptionListVisible
+ * doesn't catch these because the `❯` cursor sits on the empty input prompt,
+ * not on option 1.
+ *
+ * Detection patterns:
+ *   - 2+ distinct lettered options (A) B) C) D)) at line starts — typical
+ *     for plan-eng / plan-design / plan-devex prose AUQ
+ *   - 3+ distinct numbered options (1. 2. 3.) at line starts WITHOUT a
+ *     `❯<spaces>1.` cursor — typical for autoplan / office-hours prose AUQ
+ *
+ * Used by classifyVisible and runPlanSkillFloorCheck to return outcome='asked'
+ * (or auq_observed) instead of letting the harness time out when the model
+ * is correctly surfacing the question and waiting for user input via prose.
+ *
+ * The 4KB tail window avoids matching stale options from earlier prompts in
+ * scrollback. Permission dialogs are filtered out by the caller (see
+ * isPermissionDialogVisible callers in classifyVisible).
+ */
+export function isProseAUQVisible(visible: string): boolean {
+  const tail = visible.length > 4096 ? visible.slice(-4096) : visible;
+
+  // Pattern 1: 2+ distinct lettered options at line starts. Allow leading
+  // whitespace or `❯` cursor before the marker. PTY may collapse multiple
+  // option lines onto one logical line via stripped cursor-positioning
+  // escapes, but the NEWLINE before each option survives.
+  const letteredRe = /(?:^|\n)[ \t❯]*([A-D])\)/g;
+  const letteredHits = new Set<string>();
+  let lm: RegExpExecArray | null;
+  while ((lm = letteredRe.exec(tail)) !== null) {
+    if (lm[1]) letteredHits.add(lm[1]);
+  }
+  if (letteredHits.size >= 2) return true;
+
+  // Pattern 2: 3+ distinct numbered options at line starts, AND no `❯<spaces>1.`
+  // cursor anywhere in the FULL visible buffer (which would mean
+  // isNumberedOptionListVisible already covers the case via the native UI).
+  if (/❯\s*1\./.test(visible)) return false;
+  const numberedRe = /(?:^|\n)[ \t❯]*([1-9])\./g;
+  const numberedHits = new Set<string>();
+  let nm: RegExpExecArray | null;
+  while ((nm = numberedRe.exec(tail)) !== null) {
+    if (nm[1]) numberedHits.add(nm[1]);
+  }
+  return numberedHits.size >= 3;
+}
+
+/**
  * Parse a rendered numbered-option list out of the visible TTY text.
  *
  * Looks for lines like `❯ 1. label` (cursor) or `  2. label` (no cursor)
@@ -568,6 +620,21 @@ export function classifyVisible(
     return {
       outcome: 'asked',
       summary: 'skill fired a numbered-option prompt (AskUserQuestion or routing-injection)',
+    };
+  }
+  // Prose-rendered AUQ: model surfaced the question as lettered or numbered
+  // options in plain text (typical under --disallowedTools AskUserQuestion
+  // when no MCP variant is callable). The model is waiting for user input
+  // via the plan-mode input prompt rather than via the AUQ tool UI; this
+  // is still a legitimate "asked" surface — semantically equivalent to a
+  // tool-call AUQ from the test's perspective.
+  if (isProseAUQVisible(visible)) {
+    if (isPermissionDialogVisible(visible.slice(-TAIL_SCAN_BYTES))) {
+      return null;
+    }
+    return {
+      outcome: 'asked',
+      summary: 'skill rendered a prose-style AskUserQuestion (model waiting for user input)',
     };
   }
   return null;
@@ -1652,12 +1719,15 @@ export async function runPlanSkillFloorCheck(opts: {
         };
       }
 
-      // Success: ANY non-permission numbered-option list is an AUQ render.
-      // The bug we're catching is "fired zero AUQs," so observing one is
-      // sufficient — we don't need to fingerprint or navigate past it.
+      // Success: ANY non-permission numbered-option list is an AUQ render —
+      // either via the native numbered-prompt UI (isNumberedOptionListVisible)
+      // OR via prose-rendered options under --disallowedTools when no MCP
+      // variant is callable (isProseAUQVisible). Both surface the question
+      // to the user; the bug we're catching is "fired zero AUQs."
+      const tail = visible.slice(-TAIL_SCAN_BYTES);
       if (
-        isNumberedOptionListVisible(visible) &&
-        !isPermissionDialogVisible(visible.slice(-TAIL_SCAN_BYTES))
+        (isNumberedOptionListVisible(visible) || isProseAUQVisible(visible)) &&
+        !isPermissionDialogVisible(tail)
       ) {
         return {
           auqObserved: true,
