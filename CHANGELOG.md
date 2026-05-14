@@ -1,5 +1,61 @@
 # Changelog
 
+## [1.36.0.0] - 2026-05-14
+
+## **Page captures stop crashing on broken emoji bytes, every review skill ends with a build-actionable task checklist, federation sync no longer drops office-hours design docs.**
+## **Three community-filed issues landed as one bug-fix wave: surrogate-safe browse responses (including `/batch`), per-skill Implementation Tasks with JSONL handoff to `/autoplan`, and root-level artifact patterns in `.brain-allowlist`.**
+
+Page captures from real-world HTML hit `API Error 400: no low surrogate in string` when a page contains unpaired Unicode surrogate bytes (broken emoji, mid-character splits). Browse now sanitizes at the response chokepoint (`buildCommandResponse` in `server.ts`) AND at the `/batch` envelope, with separate utilities for raw UTF-16 surrogates and `\uXXXX` JSON escape sequences. Defense in depth wraps the highest-volume DOM-text emitters (`text`, `html`, `accessibility`, `snapshot`) at extraction time too. Every command response is now safe to JSON.stringify for the Claude API; the bug surfaces from `$B html`, `$B accessibility`, and `$B batch` are all closed, not just `$B text`. The chokepoint refactor extracts `buildCommandResponse` from `handleCommand` so the boundary is unit-testable without spinning up the server.
+
+All four review skills (CEO / design / eng / DX) now end with an `## Implementation Tasks` markdown checklist and write a `jq`-built JSONL artifact to `~/.gstack/projects/$SLUG/tasks-{phase}-{datetime}.jsonl`. `/autoplan`'s Phase 4 reads all four files, scopes by current branch + 5-commit window, dedupes on exact `(component, sorted(files), title)` matches, and renders one aggregated list inside the final approval gate. Tasks that derive from the same finding now collapse; tasks that just happen to touch the same file with different titles surface separately so the human can decide whether they're the same work. Standalone review runs (`/plan-eng-review` alone, etc.) produce their own task list and JSONL file even outside autoplan — the JSONL is the handoff contract.
+
+Federation sync (`gstack-brain-sync`) was silently skipping root-level design and test-plan docs — `/office-hours` and `/plan-eng-review` write at `projects/{slug}/{user}-{branch}-design-*.md`, but the allowlist only knew about `projects/*/designs/*.md` and `projects/*/ceo-plans/*.md`. New patterns ship in `.brain-allowlist`, `.brain-privacy-map.json` (classified as `artifact`), and `.gitattributes` (with `merge=union` to handle cross-machine conflicts). An idempotent jq-based migration (`gstack-upgrade/migrations/v1.36.0.0.sh`) patches existing installs in-place without re-running `gstack-artifacts-init` (which would have done a git commit + push and clobbered user state).
+
+### The numbers that matter
+
+Source: `bun test browse/test/sanitize.test.ts browse/test/build-command-response.test.ts test/artifacts-init-migration.test.ts` — 32 new unit tests covering every fix surface, all green.
+
+| Surface | Before | After |
+|---|---|---|
+| API 400 from `$B text` on surrogate-containing page | Crash | Sanitized at extraction + chokepoint |
+| API 400 from `$B html`, `$B accessibility`, `$B batch` | Crash (chokepoint bypassed) | Sanitized at `buildCommandResponse` + `/batch` envelope |
+| Application/json bodies with `\uXXXX` escape surrogates | Still crash (regex matches raw codepoints only) | Second-pass `stripLoneSurrogateEscapes` handles escape text |
+| `/autoplan` final output | Decision summary, no task list | Decision summary **plus** aggregated `Implementation Tasks` from all 4 phases |
+| Standalone `/plan-eng-review` output | Required-outputs sections, no task list | Same **plus** per-skill `Implementation Tasks` + JSONL handoff |
+| `/office-hours` design docs in federation queue | Silently skipped (root-level not in allowlist) | Queued, classified `artifact`, union-merge rule applied |
+| Lone surrogate sanitizer perf on 1MB clean text | n/a | <500ms (single regex pass) |
+| `buildCommandResponse` testability | Embedded inside `handleCommand`, not exported | Extracted, exported, 7 unit tests cover it |
+
+### What this means for builders
+
+Page captures with mixed-script Unicode round-trip cleanly to the Claude API now. Every review skill you run ends with a checkbox list of build tasks you can hand to Claude Code or Codex. Federation sync picks up the design docs that were silently dropping out of your brain repo. Run `/gstack-upgrade` to pick up the migration that patches your `.brain-allowlist`, `.brain-privacy-map.json`, and `.gitattributes` in place; no commit + push, no user-state clobber.
+
+### Itemized changes
+
+#### Fixed
+
+- **Page-capture API 400 from lone Unicode surrogates (#1440)** — `browse/src/sanitize.ts` (new) exports `stripLoneSurrogates`, `stripLoneSurrogateEscapes`, and `sanitizeBody`. `buildCommandResponse` (extracted from `handleCommand`, now exported for testability) sanitizes every text/plain and application/json response body. `/batch` was bypassing this chokepoint (`server.ts:1841,1869`); each per-result string is now sanitized AND the final envelope gets a second pass on the JSON-escape form. Defense in depth wraps at `getCleanText`, `getCleanTextWithStripping`, `html`, `accessibility`, and `snapshot` extraction sites.
+- **Federation sync drops `/office-hours` and `/plan-eng-review` artifacts (#1452)** — `bin/gstack-artifacts-init` adds `projects/*/*-design-*.md` and `projects/*/*-test-plan-*.md` to all three managed blocks: `.brain-allowlist`, `.brain-privacy-map.json` (class `artifact`), and `.gitattributes` (`merge=union`).
+- **`/setup-gbrain` wrong config key (#1441)** — verified already-fixed in v1.27.0.0; closed the issue with a comment citing the migration script that aligns legacy `gbrain_sync_mode` installs to the current `artifacts_sync_mode` key.
+
+#### Added
+
+- **`## Implementation Tasks` section + JSONL handoff in every review skill (#1454)** — `plan-ceo-review`, `plan-design-review`, `plan-eng-review`, `plan-devex-review` each emit a per-skill markdown checklist and write `~/.gstack/projects/$SLUG/tasks-{phase}-{datetime}.jsonl` via `jq -nc` (never hand-rolled echo). `/autoplan` Phase 4 reads all four phase JSONL files, scopes by current branch and 5-commit window, dedupes on exact `(component, sorted(files), title)` matches, and renders one aggregated list. Near-duplicates surface separately with a possible-duplicate note for human resolution.
+- **`browse/src/sanitize.ts`** — two surrogate-stripping utilities plus a convenience selector keyed on content-type. Pairs with a refactored `buildCommandResponse` in `server.ts` (exported for testability) and per-result sanitization in the `/batch` handler.
+- **`gstack-upgrade/migrations/v1.36.0.0.sh`** — idempotent per-file repair for `.brain-allowlist`, `.brain-privacy-map.json`, and `.gitattributes`. Uses `jq` for the JSON file (preserves validity); falls back with a clear warning if `jq` is missing. Does NOT re-run `gstack-artifacts-init` (which would commit + push to the user's federated repo).
+- **32 new unit tests** across `browse/test/sanitize.test.ts` (18), `browse/test/build-command-response.test.ts` (7), `test/artifacts-init-migration.test.ts` (7). All gate-tier (free, runs on every PR).
+
+#### Changed
+
+- **`browse/src/snapshot.ts`, `read-commands.ts`, `content-security.ts`** — defense-in-depth surrogate wraps at extraction sites that feed pre-Response consumers (datamarking, envelope wrapping).
+- **`scripts/resolvers/tasks-section.ts`** (new) + **`scripts/task-emission-schema.ts`** (new) — shared resolver and schema for the per-skill task emission. Each review template invokes `{{TASKS_SECTION_EMIT:<phase>}}` once.
+
+#### For contributors
+
+- `/codex review` on Codex CLI ≥0.130.0 was handled separately by v1.34.2.0 (the dual-path bare/exec approach). Our planning surfaced an adjacent concern: the bare path no longer carries the filesystem boundary, so codex may waste tokens reading skill files when the diff happens to touch `.claude/skills/`. Filed as a follow-up issue; not blocking this release.
+- The implementation-tasks aggregation in `/autoplan` uses a structured JSONL handoff between phases rather than re-parsing markdown. Schema lives in `scripts/task-emission-schema.ts`. Adding a fifth review phase means adding the phase name to `VALID_PHASES` in `scripts/resolvers/tasks-section.ts` and including `{{TASKS_SECTION_EMIT:<phase-name>}}` in the new review template.
+- Touchfiles entries are unchanged — the new tests are all gate-tier unit tests that run on `bun test`. Touchfiles is only for E2E + LLM evals.
+
 ## [1.35.0.0] - 2026-05-13
 
 ## **Docs become a tracked surface, not an afterthought. `/document-generate` writes them from scratch, `/document-release` audits coverage in four Diataxis quadrants.**
